@@ -7,8 +7,11 @@ from typing import Annotated, Literal
 from langchain_openai import ChatOpenAI
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import AnyMessage, AIMessage, HumanMessage
 from langchain_core.tools import tool
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 api_key = settings['openai']
 model = 'gpt-4o-mini'
@@ -118,6 +121,9 @@ def response_node(state: AgentState) -> AgentState:
     state.messages = [new_message]
     return state
 
+## FastAPI setup
+app = FastAPI()
+
 graph = StateGraph(AgentState)
 graph.add_node(get_language_node)
 graph.add_node(appointment_node)
@@ -133,14 +139,23 @@ graph.add_edge("rag_node", "response_node")
 graph.add_edge("response_node", END)
 
 initial_state = AgentState()
-compiled_graph = graph.compile()
+checkpointer = MemorySaver()
+compiled_graph = graph.compile(checkpointer=checkpointer)
 
 # _ = compiled_graph.get_graph().draw_mermaid_png(output_file_path=str(WORKFLOW_JPG_PATH))
 
-question = "Jason, tomorrow at 10:00 am, with a pediatrist, please."
-user_message = HumanMessage(content=question)
-initial_state.user_message = [user_message]
-initial_state.messages = [user_message]
+class AgentInput(BaseModel):
+    question: str
 
-agent_response = compiled_graph.invoke(initial_state)
-print(agent_response["messages"][-1].content)
+@app.post("/run")
+def run(agent_input: AgentInput):
+    # question = "Jason, tomorrow at 10:00 am, with a pediatrist, please."
+    user_message = HumanMessage(content=agent_input.question)
+    initial_state.user_message = [user_message]
+    initial_state.messages = [user_message]
+
+    agent_response = compiled_graph.invoke(
+        initial_state,
+        config={"configurable": {"thread_id": 1}})
+    print(agent_response["messages"][-1].content)
+    return JSONResponse(content=agent_response["messages"][-1].content)
